@@ -136,8 +136,10 @@ void handleTransmission( void(*sendFunc)( int ) ) {
         break;
       }
       default : {
-        kafenv.c.tx.data.messageType = COM_NACK;
-        sendFunc( 0 );
+        if( 0x10 <= kafenv.c.rx.data.messageType && kafenv.c.rx.data.messageType <= 0x1F ) {
+          kafenv.c.tx.data.messageType = COM_NACK;
+          sendFunc( 0 );
+        }
       }
     }
   } else { // eavesdrop
