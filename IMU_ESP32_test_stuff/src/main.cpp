@@ -52,6 +52,7 @@ void setup() {
     setting.accel_fchoice = 0x01;
     setting.accel_dlpf_cfg = ACCEL_DLPF_CFG::DLPF_99HZ;
     mpu.setMagneticDeclination(14);
+    mpu.selectFilter(QuatFilterSel::MADGWICK);
 
     if (!mpu.setup(0x68, setting)) {  // change to your own address
         while (1) {
@@ -60,20 +61,13 @@ void setup() {
         }
     }
 
-    //Serial.println("Accel Gyro calibration will start in 5sec.");
-    //Serial.println("Please leave the device still on the flat plane.");
-    //mpu.verbose(true);
-    //delay(5000);
-    //mpu.calibrateAccelGyro();
-    //Serial.println("Mag calibration will start in 5sec.");
-    //Serial.println("Please Wave device in a figure eight until done.");
-    //delay(5000);
-    //mpu.calibrateMag();
-    //print_calibration();
-    //mpu.verbose(false);
-
-    //mpu.setMagBias(-677, 626.7333, -988.6);
-    //Serial.print("setup complete");
+    Serial.println("Accel Gyro calibration will start in 5sec.");
+    Serial.println("Please leave the device still on the flat plane.");
+    mpu.verbose(true);
+    delay(5000);
+    mpu.calibrateAccelGyro();
+    print_calibration();
+    Serial.println("setup complete");
 
   }
 
@@ -88,18 +82,6 @@ void print_roll_pitch_yaw() {
 
 }
 
-void print_mag_data() {
-  Serial.print("MagX, MagY, MagZ: ");
-  Serial.print(mpu.getMagX()*0.15);
-  Serial.print(", ");
-  Serial.print(mpu.getMagY()*0.15);
-  Serial.print(", ");
-  Serial.print(mpu.getMagZ()*0.15);
-  Serial.print(", ");
-  Serial.print("magnitude ");
-  Serial.print( sqrt(mpu.getMagX()*mpu.getMagX()*0.15*0.15+mpu.getMagY()*mpu.getMagY()*0.15*0.15+mpu.getMagZ()*mpu.getMagZ()*0.15*0.15) );
-}
-
 void print_mag_scale() {
   Serial.print("Scale factors for mag: ");
   Serial.print(", ");
@@ -112,7 +94,7 @@ void print_mag_scale() {
 }
 
 double get_mag_magnitude() {
-    double a = sqrt(mpu.getMagX()*mpu.getMagX()*0.15*0.15+mpu.getMagY()*mpu.getMagY()*0.15*0.15+mpu.getMagZ()*mpu.getMagZ()*0.15*0.15);
+    double a = sqrt(mpu.getMagX()*mpu.getMagX()*0.1*0.1+mpu.getMagY()*mpu.getMagY()*0.1*0.1+mpu.getMagZ()*mpu.getMagZ()*0.1*0.1); // uT
     return a;
 }
 
@@ -120,6 +102,7 @@ void loop() {
     if (mpu.update()) {
         n++;
         if (n%10 == 1) {
+            get_mag_magnitude();
             Serial.print(mpu.getYaw(), 2);
             Serial.print(",");
             Serial.print(mpu.getPitch(), 2);

@@ -1,5 +1,7 @@
 # drone_code
 WAAR Drone Code Base
 
-Added IMU_ESP32_test_stuff, which contains visualtask.py
-By modifying visualtask.py and platformio.ini, as well as having the needed python libraries and platformio vs code extension, it is possible to see the imu attidue in real time.
+visual_task.py allows for attutide visualization. Ensure all packages under requirements.txt are installed.
+To run visual_task.py, connect to the esp32 and set the correct PORT under visual_task.py and platformio.ini.
+
+

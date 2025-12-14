@@ -39,3 +39,11 @@
 
 # debug information files
 *.dwo
+
+# python venv
+*.venv/
+
+# mac junk
+.DS_Store
+
+.pio/

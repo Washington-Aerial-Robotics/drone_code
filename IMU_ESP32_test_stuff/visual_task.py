@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 # ---------------- Serial ----------------
-PORT = "COM5" # Change as required
+PORT = "/dev/cu.usbserial-02C554D8" # Change as required
 BAUD = 115200
 
 
@@ -22,7 +22,7 @@ def run(cmd):
 
     subprocess.run([sys.executable, "-m", "platformio"] + cmd, cwd=PROJECT_DIR, check=True)
 
-# Build firmware
+#Build firmware
 run(["run"])
 # Upload firmware
 run(["run", "-t", "upload"])
@@ -30,8 +30,17 @@ print("✅ Firmware flashed successfully")
 ser = serial.Serial(PORT, BAUD, timeout=1)
 
 
-
-
+line = ser.readline().decode("utf-8", errors="ignore").strip()
+prevLine = line
+print(line)
+while(True):
+    line = ser.readline().decode("utf-8", errors="ignore").strip()
+    if (line!=prevLine):
+        print(line)
+        prevLine = line
+    if (line == "setup complete"):
+        break
+    time.sleep(0.01)
 
 
 
@@ -90,7 +99,7 @@ ax.set_xlabel("X")
 ax.set_ylabel("Y")
 ax.set_zlabel("Z")
 
-cube_poly = Poly3DCollection([], alpha=0.6, facecolor="cyan")
+cube_poly = Poly3DCollection([], alpha=0.6, facecolor="cyan", edgecolor="black")
 ax.add_collection3d(cube_poly)
 
 print("Listening for roll,pitch,yaw ... Ctrl+C to stop")
@@ -111,7 +120,7 @@ while True:
     pitch = np.deg2rad(pitch)
     yaw   = np.deg2rad(yaw)
 
-    R = rotation_matrix(roll, pitch, yaw)
+    R = rotation_matrix(yaw, -pitch, roll)
     rotated = cube_vertices @ R.T
 
     face_vertices = [[rotated[i] for i in face] for face in faces]

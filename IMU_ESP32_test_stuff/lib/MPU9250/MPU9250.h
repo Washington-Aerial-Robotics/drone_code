@@ -515,52 +515,47 @@ private:
 
 public:
     void update_mag() {
-        int16_t mag_count[3] = {0, 0, 0};  // Stores the 16-bit signed magnetometer sensor output
+    int16_t mag_count[3] = {0, 0, 0};  // raw sensor output
 
-        // Read the x/y/z adc values
-        if (read_mag(mag_count)) {
-            // Calculate the magnetometer values in milliGauss
-            // Include factory calibration per data sheet and user environmental corrections
-            // mag_bias is calcurated in 16BITS
-            float bias_to_current_bits = mag_resolution / get_mag_resolution(MAG_OUTPUT_BITS::M16BITS);
-            m[0] = (float)(mag_count[0] * mag_resolution * mag_bias_factory[0] - mag_bias[0] * bias_to_current_bits) * mag_scale[0];  // get actual magnetometer value, this depends on scale being set
-            m[1] = (float)(mag_count[1] * mag_resolution * mag_bias_factory[1] - mag_bias[1] * bias_to_current_bits) * mag_scale[1];
-            m[2] = (float)(mag_count[2] * mag_resolution * mag_bias_factory[2] - mag_bias[2] * bias_to_current_bits) * mag_scale[2];
+    if (read_mag(mag_count)) {
+        float bias_to_current_bits = mag_resolution / get_mag_resolution(MAG_OUTPUT_BITS::M16BITS);
 
-            float raw[3] = { m[0]*0.1, m[1]*0.1, m[2]*0.1 };
-            float calib[3] = { 0, 0, 0 };
+        double temp[3];
+        temp[0] = (double)(mag_count[0] * mag_resolution * mag_bias_factory[0] - mag_bias[0] * bias_to_current_bits) * mag_scale[0];
+        temp[1] = (double)(mag_count[1] * mag_resolution * mag_bias_factory[1] - mag_bias[1] * bias_to_current_bits) * mag_scale[1];
+        temp[2] = (double)(mag_count[2] * mag_resolution * mag_bias_factory[2] - mag_bias[2] * bias_to_current_bits) * mag_scale[2];
 
+        double calib[3];
+        calibrateMag(temp, calib);
 
-            calibrateMag(raw, calib);
-            m[0] = calib[0]/0.1;
-            m[1] = calib[1]/0.1;
-            m[2] = calib[2]/0.1;
-            
+        for (int i = 0; i < 3; i++) {
+            m[i] = (float)calib[i];  // copy back to sensor array
         }
-        
     }
+}
 
-    const float A[3][3] = {
-        { 1.019571f,  0.032463f, -0.053064f },
-        { 0.032463f,  0.830989f, -0.015915f },
-        { -0.053064f, -0.015915f, 0.872756f }
+
+    const double A[3][3] = {
+        { 1.019571,  0.032463, -0.053064 },
+        { 0.032463,  0.830989, -0.015915 },
+        { -0.053064, -0.015915, 0.872756 }
     };
 
-    const float b[3] = {
-        -124.477011f,
-        83.467785f,
-        -174.190412f
+    const double b[3] = {
+        -1244.77011,
+        834.67785,
+        -1741.90412
     };
 
-    void calibrateMag(const float raw[3], float calib[3]) {
-    float h[3] = {
+    void calibrateMag(const double raw[3], double calib[3]) {
+    double h[3] = {
         raw[0] - b[0],
         raw[1] - b[1],
         raw[2] - b[2]
     };
 
     for (int i = 0; i < 3; i++) {
-        calib[i] = 0.0f;
+        calib[i] = 0.0;
         for (int j = 0; j < 3; j++) {
             calib[i] += A[i][j] * h[j];
         }
