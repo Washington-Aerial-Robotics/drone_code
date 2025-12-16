@@ -61,12 +61,12 @@ void setup() {
         }
     }
 
-    Serial.println("Accel Gyro calibration will start in 5sec.");
-    Serial.println("Please leave the device still on the flat plane.");
-    mpu.verbose(true);
-    delay(5000);
-    mpu.calibrateAccelGyro();
-    print_calibration();
+    //Serial.println("Accel Gyro calibration will start in 5sec.");
+    //Serial.println("Please leave the device still on the flat plane.");
+    //mpu.verbose(true);
+    delay(200);
+    //mpu.calibrateAccelGyro();
+    //print_calibration();
     Serial.println("setup complete");
 
   }
@@ -102,12 +102,25 @@ void loop() {
     if (mpu.update()) {
         n++;
         if (n%10 == 1) {
-            get_mag_magnitude();
-            Serial.print(mpu.getYaw(), 2);
+            Serial.print(mpu.getQuaternionW(), 3);
             Serial.print(",");
-            Serial.print(mpu.getPitch(), 2);
+            Serial.print(mpu.getQuaternionX(), 3);
             Serial.print(",");
-            Serial.println(mpu.getRoll(), 2);
+            Serial.print(mpu.getQuaternionY(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getQuaternionZ(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getAccX(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getAccY(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getAccZ(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getMagX(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getMagY(), 3);
+            Serial.print(",");
+            Serial.println(mpu.getMagZ(), 3);
         }
     }
 }

@@ -1,9 +1,6 @@
 {
 	"folders": [
 		{
-			"path": "../../../../../Desktop/robotics/esp32_connect_stuff"
-		},
-		{
 			"name": "IMU_ESP32_test_stuff",
 			"path": ".."
 		}
