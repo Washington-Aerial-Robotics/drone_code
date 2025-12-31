@@ -6,6 +6,7 @@
 #else
 #include "lib/ESP32Servo/ESP32Servo.h"
 #include "lib/Dw3000/dw3000.h"
+#include <ESP.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -21,7 +22,7 @@
 #define ESC_PINS 33, 35, 25, 26
 
 //FIRMWARE____________________________________________________________________________________________________
-#define RTOS_FLIGHT_PERIOD       4 //ms
+#define RTOS_FLIGHT_PERIOD    4000 //us
 #define NULL_LOOP                0
 #define FLIGHT_LOOP              1
 #define COMMAND_LOOP             2
@@ -38,8 +39,8 @@ static struct {
 
 static void loopFirmwareCommand() {
   vTaskDelay( 1 );
-  kafenv.n.currentTime = millis();
   delay( kafenv.n.comTaskDelay );
+  kafenv.n.currentTime = millis();
 #if ALLOW_CUSTOM_FIRMWARE
   for( int i = 0; i < firmware.numComs; i++ ) {
     firmware.comFuncs[i]();
@@ -50,13 +51,18 @@ static void loopFirmwareCommand() {
 static void loopFirmwareFlight() {
   vTaskDelay( 0 );
   unsigned long oldTime = kafenv.f.currentTime;
-  int delayTime = RTOS_FLIGHT_PERIOD - (int)( millis() - oldTime );
+  int delayTime = RTOS_FLIGHT_PERIOD - (int)( micros() - oldTime );
   if( delayTime > 0 ) {
-    delay( delayTime );
+    delayMicroseconds( delayTime );
   }
-  unsigned long newTime = millis();
+  unsigned long newTime = micros();
   kafenv.f.currentTime = newTime;
   kafenv.f.timeStep = newTime - oldTime;
+  void( *flightTaskQueue )() = kafenv.p.flightTaskQueue;
+  if( flightTaskQueue != NULL ) {
+    kafenv.p.flightTaskQueue = NULL;
+    flightTaskQueue();
+  }
 #if ALLOW_CUSTOM_FIRMWARE
   for( int i = 0; i < firmware.numFlights; i++ ) {
     firmware.flightFuncs[i]();
@@ -73,7 +79,7 @@ static void initFirmware( int id ) {
   kafenv.p.peripheral[id].loopFunction = &loopFirmwareFlight;
   kafenv.p.peripheral[id].auxLoopFunction = &loopFirmwareCommand;
   kafenv.p.peripheral[id].data = &firmware;
-  kafenv.p.version = 1;
+  kafenv.p.version = 2;
   kafenv.p.trigger = 0;
   for( int i = 0; i < PERIPHERAL_COUNT; i++ ) {
     if( kafenv.p.peripheral[i].enabled ) {
@@ -97,29 +103,105 @@ static void initFirmware( int id ) {
   delay( 1000 );
 }
 
+//ESP32_______________________________________________________________________________________________________
+/*#define NVS_OFFSET 0x9000
+
+static void loopESP32() {
+  if( kafenv.n.fileStorageMode != 0 ) {
+    switch( kafenv.n.fileStorageMode ) {
+      case 'k' : {
+        ESP.restart();
+        break;
+      }
+      case 'w' : {
+        ESP.flashEraseSector( NVS_OFFSET / 4096 );
+        ESP.flashWrite( NVS_OFFSET, ( uint32_t* )( void* )&kafenv, sizeof( kafenv ) );
+        break;
+      }
+      case 'r' : {
+        ESP.flashRead( NVS_OFFSET, ( uint32_t* )( void* )&kafenv, sizeof( kafenv ) );
+        break;
+      }
+      case 'c' : {
+        void* calibptr = ( void* )&( kafenv.p.calib );
+        unsigned int offset = ( unsigned int )( ( ( char* )( void* )&kafenv ) - ( ( char* )calibptr ) );
+        ESP.flashRead( NVS_OFFSET + offset, ( uint32_t* )calibptr, sizeof( kafenv.p.calib ) );
+        break;
+      }
+      default : {}
+    }
+    kafenv.n.fileStorageMode = 0;
+  }
+}
+
+static void initESP32( int id ) {
+  strcpy( kafenv.p.peripheral[id].name, "ESP32" );
+  kafenv.p.peripheral[id].enabled = true;
+  kafenv.p.peripheral[id].loopType = NULL_LOOP;
+  kafenv.p.peripheral[id].dataSize = 0;
+  kafenv.p.peripheral[id].initFunction = &initESP32;
+  kafenv.p.peripheral[id].loopFunction = &loopESP32;
+  kafenv.p.peripheral[id].auxLoopFunction = NULL;
+  kafenv.p.peripheral[id].data = NULL;
+}*/
+
 //ESCS________________________________________________________________________________________________________
 #define ESC_MAX               2000
 #define ESC_MIN               1000
-#define ESC_ARM                500
-#define ESC_RAMP                10
+#define ESC_RAMP                20
+#define ESC_ARMEDRAMP           10
 
 static struct {
+  bool motorEnabled = false;
   unsigned int pins[MOTOR_COUNT] = { ESC_PINS };
   unsigned short setpoints[MOTOR_COUNT];
   Servo servos[MOTOR_COUNT];
 } escs;
 
 static void loopESCs() {
-  for( int i = 0; i < MOTOR_COUNT; i++ ) {
-    unsigned short value = (unsigned short)( ( ESC_MAX - ESC_MIN ) * kafenv.f.motorOutput[i] + ESC_MIN ) - escs.setpoints[i];
-    KF_BOUND( value, -ESC_RAMP, ESC_RAMP );
-    value = escs.setpoints[i] + value;
-    KF_BOUND( value, ESC_MIN, ESC_MAX );
-    if( value != escs.setpoints[i] ) {
-      escs.setpoints[i] = value;
-      escs.servos[i].writeMicroseconds( value );
+  if( kafenv.f.motorsEnabled ) {
+    if( escs.motorEnabled ) {
+      for( int i = 0; i < MOTOR_COUNT; i++ ) {
+        unsigned short value = (unsigned short)( ( ESC_MAX - ESC_MIN ) * kafenv.f.motorOutput[i] + ESC_MIN ) - escs.setpoints[i];
+        KF_BOUND( value, -ESC_RAMP, ESC_RAMP );
+        value = escs.setpoints[i] + value;
+        KF_BOUND( value, ESC_MIN, ESC_MAX );
+        if( value != escs.setpoints[i] ) {
+          escs.setpoints[i] = value;
+          escs.servos[i].writeMicroseconds( value );
+        }
+      }
+    } else {
+      escs.motorEnabled = true;
+      for( int i = 0; i < MOTOR_COUNT; i++ ) {
+        if( escs.setpoints[i] < ESC_MIN ) {
+          escs.setpoints[i] += ESC_ARMEDRAMP;
+          escs.servos[i].writeMicroseconds( escs.setpoints[i] );
+          escs.motorEnabled = false;
+        }
+      }
+    }
+  } else {
+    if( escs.motorEnabled ) {
+      escs.motorEnabled = false;
+      for( int i = 0; i < MOTOR_COUNT; i++ ) {
+        if( escs.setpoints[i] > 0 ) {
+          if( escs.setpoints[i] < ESC_ARMEDRAMP ) {
+            escs.setpoints[i] = 0;
+          } else {
+            escs.setpoints[i] -= ESC_ARMEDRAMP;
+            escs.motorEnabled = true;
+          }
+          escs.servos[i].writeMicroseconds( escs.setpoints[i] );
+        }
+      }
+    } else {
+      for( int i = 0; i < MOTOR_COUNT; i++ ) {
+        escs.servos[i].writeMicroseconds( 0 );
+      }
     }
   }
+  
 }
 
 static void initESCs( int id ) {
@@ -135,8 +217,8 @@ static void initESCs( int id ) {
   for( int i = 0; i < MOTOR_COUNT; i++ ) {
     pinMode( escs.pins[i], OUTPUT );
     escs.servos[i].attach( escs.pins[i] );
-    escs.servos[i].writeMicroseconds( ESC_ARM );
-    escs.setpoints[i] = ESC_ARM;
+    escs.servos[i].writeMicroseconds( 0 );
+    escs.setpoints[i] = 0;
   }
 }
 
@@ -151,8 +233,6 @@ static void initESCs( int id ) {
 static struct {
   bool working = false;
   unsigned int missCount = 0;
-  float accelCalib[3] = { 0, 0, 0 };
-  float angvelCalib[3] = { 0, 0, 0 };
   union {
     short imuData[ MPU_READ_SIZE / 2 ];
     unsigned char imuBytes[MPU_READ_SIZE];
@@ -171,15 +251,19 @@ static void loopMPU6050() {
         mpu.imuBytes[i] = mpu.imuBytes[ i + 1 ];
         mpu.imuBytes[ i + 1 ] = temp;
       }
-      KF_VEC3( q, kafenv.f.accelInput.f[q] = mpu.imuData[q] / MPU_ACCEL_SCALE - mpu.accelCalib[q] );
-      KF_VEC3( q, kafenv.f.gyroInput.f[q] = mpu.imuData[ 4 + q ] / MPU_GYRO_SCALE - mpu.angvelCalib[q] );
+      KF_VEC3( q, kafenv.f.accelInput.f[q] = mpu.imuData[q] / MPU_ACCEL_SCALE );
+      kafenv.f.accelInput.stdev = 0;
+      KF_VEC3( q, kafenv.f.gyroInput.f[q] = mpu.imuData[ 4 + q ] / MPU_GYRO_SCALE );
+      kafenv.f.gyroInput.stdev = 0;
       mpu.missCount = 0;
     } else if( ++mpu.missCount > 50 ) {
       mpu.working = false;
     }
   } else {
     KF_VEC3( q, kafenv.f.accelInput.f[q] = 0 );
+      kafenv.f.accelInput.stdev = 1e10;
     KF_VEC3( q, kafenv.f.gyroInput.f[q] = 0 );
+      kafenv.f.gyroInput.stdev = 1e10;
   }
 }
 
@@ -215,6 +299,8 @@ static void initMPU6050( int id ) {
 }
 
 //WIFI________________________________________________________________________________________________________
+#define WIFI_COM_METHOD 1
+
 static struct {
   bool wifiConnected = false;
   bool clientConnected = false;
@@ -224,7 +310,9 @@ static struct {
 
 static void loopWiFi() {
   bool lastWorking = wifi.wifiConnected;
+  bool messageAvailable = false;
   wifi.wifiConnected = WiFi.status() == WL_CONNECTED;
+  unsigned char length;
   if( wifi.wifiConnected ) {
     if( !lastWorking ) {
       strcpy( kafenv.n.networkAddress, WiFi.localIP().toString().c_str() );
@@ -234,19 +322,26 @@ static void loopWiFi() {
 #endif
     }
     wifi.clientConnected = wifi.client || ( wifi.client = wifi.server.accept() );
-    if( wifi.clientConnected && wifi.client.available() > 0 ) {
-      wifi.client.setTimeout( 100 );
-      int length = wifi.client.available();
-      length = length < sizeof( kafenv.c.rx.raw ) ? length : sizeof( kafenv.c.rx.raw );
-      wifi.client.readBytes( kafenv.c.rx.raw, length );
-      if( kaf_triggercom() ) {
-        wifi.client.write( kafenv.c.tx.raw, COM_HEADER_LEN + kafenv.n.replySize );//2ms
+    if( wifi.clientConnected ) {
+      if( ( length = (unsigned char)wifi.client.available() ) > 0 ) {
+        wifi.client.setTimeout( 100 );
+        length = length < sizeof( kafenv.c.rx.raw ) ? length : sizeof( kafenv.c.rx.raw );
+        wifi.client.readBytes( kafenv.c.rx.raw, length );
+        if( kafenv.c.rx.data.messageType == COM_KILL && kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
+          ESP.restart();
+        } else {
+          messageAvailable = true;
+        }
       }
     }
   } else if( kafenv.n.attemptReconnect ) {
     WiFi.begin( kafenv.n.networkName, kafenv.n.networkPassword );
     kafenv.n.attemptReconnect = false;
   }
+  kaf_handlecoms( wifi.clientConnected, messageAvailable, WIFI_COM_METHOD, length, []( unsigned char* ptr, unsigned char len ) {
+    wifi.client.write( ptr, COM_HEADER_LEN + len );
+    wifi.client.flush();
+  } );
 }
 
 static void initWiFi( int id ) {
@@ -264,9 +359,12 @@ static void initWiFi( int id ) {
 }
 
 //SERIAL______________________________________________________________________________________________________
+#define SERIAL_COM_METHOD 2
+
 static void loopSerial() {
-  int serialLength;
-  if( ( serialLength = Serial.available() ) > 0 ) {
+  unsigned char serialLength;
+  bool messageAvailable = false;
+  if( ( serialLength = (unsigned char)Serial.available() ) > 0 ) {
 #if DEBUGPRINT
     int activeCount = 0;
     unsigned char current = 0;
@@ -310,18 +408,21 @@ static void loopSerial() {
       if( Serial.available() >= sizeof( kafenv ) ) {
         Serial.readBytes( (char*)(void*)( &kafenv ), sizeof( kafenv ) );
       }
-    } else if( kaf_triggercom() ) {
-#if DEBUGPRINT
-      Serial.printf( "msg: { " );
-      for( int i = 0; i < COM_HEADER_LEN + kafenv.n.replySize; i++ ) {
-        Serial.printf( "%2x ", kafenv.c.tx.raw[i] );
-      }
-      Serial.printf( "}\n" );
-#else
-      Serial.write( kafenv.c.tx.raw, COM_HEADER_LEN + kafenv.n.replySize );//2ms
-#endif
+    } else  {
+      messageAvailable = true;
     }
   }
+  kaf_handlecoms( true, messageAvailable, SERIAL_COM_METHOD, serialLength, []( unsigned char* ptr, unsigned char len ) {
+#if DEBUGPRINT
+    Serial.printf( "msg: { " );
+    for( int i = 0; i < COM_HEADER_LEN + len; i++ ) {
+      Serial.printf( "%2x ", ptr[i] );
+    }
+    Serial.printf( "}\n" );
+#else
+    Serial.write( ptr, COM_HEADER_LEN + len );
+#endif
+  } );
 }
 
 static void initSerial( int id ) {
@@ -341,6 +442,7 @@ static void initSerial( int id ) {
 }
 
 //DW3000______________________________________________________________________________________________________
+#define DW_COM_METHOD            3
 #define DW_TX_ANT_DLY        16385 //TX antenna delay
 #define DW_RX_ANT_DLY        16385 //RX antenna delay
 #define DW_PRE_TIMEOUT           5
@@ -352,6 +454,8 @@ static void initSerial( int id ) {
 
 static struct {
   bool working = false;
+  unsigned char frameLength;
+  unsigned char rangingIndex = 0;
   dwt_config_t config = { 
     5, DWT_PLEN_128, DWT_PAC8, 9, 9, 1, DWT_BR_6M8, DWT_PHRMODE_STD, 
     DWT_PHRRATE_STD, (129 + 8 - 8), DWT_STS_MODE_OFF, DWT_STS_LEN_64, DWT_PDOA_M0
@@ -373,20 +477,15 @@ static bool sendMessageDW( unsigned char msgLen, unsigned char sendMask ) {
   return false;
 }
 
-static void sendMessageDW() {
-  dwt_setdelayedtrxtime( ( get_rx_timestamp_u64() + ( 2000 * UUS_TO_DWT_TIME ) ) >> 8 );
-  sendMessageDW( kafenv.n.replySize, DWT_START_TX_DELAYED );
-}
-
 static bool receiveMessageDW( unsigned int timeout ) {
   unsigned int status = 0;
   unsigned long endTime = micros() + timeout + DW_SPIN_TIMEOUT;
   while( !( ( status = dwt_read32bitreg( SYS_STATUS_ID ) ) & ( SYS_STATUS_RXFCG_BIT_MASK|SYS_STATUS_ALL_RX_TO|SYS_STATUS_ALL_RX_ERR ) ) && micros() < endTime );
   if ( status & SYS_STATUS_RXFCG_BIT_MASK ) {
     dwt_write32bitreg( SYS_STATUS_ID, SYS_STATUS_RXFCG_BIT_MASK|SYS_STATUS_TXFRS_BIT_MASK );
-    unsigned int frameLength = dwt_read32bitreg( RX_FINFO_ID ) & RXFLEN_MASK;
-    frameLength = frameLength < sizeof( kafenv.c.rx.raw ) ? frameLength : sizeof( kafenv.c.rx.raw );
-    dwt_readrxdata( kafenv.c.rx.raw, frameLength, 0 );
+    dw.frameLength = (unsigned char)( dwt_read32bitreg( RX_FINFO_ID ) & RXFLEN_MASK );
+    dw.frameLength = dw.frameLength < sizeof( kafenv.c.rx.raw ) ? dw.frameLength : sizeof( kafenv.c.rx.raw );
+    dwt_readrxdata( kafenv.c.rx.raw, dw.frameLength, 0 );
     return true;
   } else {
     dwt_write32bitreg( SYS_STATUS_ID, SYS_STATUS_ALL_RX_TO|SYS_STATUS_ALL_RX_ERR );
@@ -395,79 +494,96 @@ static bool receiveMessageDW( unsigned int timeout ) {
 }
 
 static void processRangingData( unsigned char devID, unsigned int tof1, unsigned int tof2, coordinate* position ) {
-  unsigned long currentTime = millis();
   unsigned char index = kaf_getdevice( devID );
-  kafenv.n.devices[index].lastSeen = currentTime;
-  kafenv.n.devices[index].lastRanging = currentTime;
+  kafenv.n.devices[index].nodeOrder = 0;
+  kafenv.n.devices[index].lastSeen = kafenv.n.currentTime;
+  kafenv.n.devices[index].lastRanging = kafenv.n.currentTime;
   kafenv.n.devices[index].position = *position;
   kafenv.n.devices[index].distance = 0.5F * ( tof1 + tof2 ) * DWT_TIME_UNITS * SPEED_OF_LIGHT;
 }
 
 static void loopDW3000() {
+  bool sendSuccess = false;
   if( dw.working ) {
-    //Initiate DW 5ms
-    kafenv.c.tx.data.fromID = kafenv.u.deviceID;
-    kafenv.c.tx.data.toID = 0;
-    kafenv.c.tx.data.messageType = COM_RANGING_1;
-    kafenv.c.tx.data.ranging1.position = kafenv.u.stateEstimate.x;
-    dwt_setrxaftertxdelay( DW_PERIOD_R12 - DW_RANGE_TOLERANCE );
-    dwt_setrxtimeout( DW_RANGE_TOLERANCE * 2 );
-    dwt_setpreambledetecttimeout( DW_PRE_TIMEOUT );
-    if ( sendMessageDW( sizeof( kafenv.c.tx.data.ranging1 ), DWT_START_TX_IMMEDIATE|DWT_RESPONSE_EXPECTED ) 
-        && receiveMessageDW( DW_PERIOD_R12 + DW_RANGE_TOLERANCE ) ) {
-          kafenv.n.currentTime = millis();
-      if( kafenv.c.rx.data.messageType == COM_RANGING_2 && kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
-        unsigned char fromID = kafenv.c.rx.data.fromID;
-        uint64_t range1TxTime = get_tx_timestamp_u64();
-        uint64_t range2RxTime = get_rx_timestamp_u64();
-        uint32_t final_tx_time = ( range2RxTime + ( DW_PERIOD_R23 * UUS_TO_DWT_TIME ) ) >> 8;
-        uint64_t range3TxTime = ( ( (uint64_t)( final_tx_time & 0xFFFFFFFEUL ) ) << 8 ) + DW_TX_ANT_DLY;
-        dwt_setdelayedtrxtime( final_tx_time );
-        unsigned int timeOfFlight = ( (unsigned int)( range2RxTime - range1TxTime ) ) - kafenv.c.rx.data.ranging2.processingTime;
-        kafenv.c.tx.data.toID = fromID;
-        kafenv.c.tx.data.messageType = COM_RANGING_3;
-        kafenv.c.tx.data.ranging3.processingTime = (unsigned int)( range3TxTime - range2RxTime );
-        kafenv.c.tx.data.ranging3.timeOfFlight = timeOfFlight;
-        if( sendMessageDW( sizeof( kafenv.c.tx.data.ranging3 ), DWT_START_TX_DELAYED ) ) {
-          processRangingData( fromID, timeOfFlight, timeOfFlight, &kafenv.c.rx.data.ranging2.position );
-        }
-      } else if( kaf_triggercom() ) {
-        sendMessageDW();
+    unsigned char sendIndex;
+    for( sendIndex = 0; sendIndex < SEND_QUEUE_COUNT; sendIndex++ ) {
+      if( kafenv.n.sendPackets[sendIndex].deliveryMethod == DW_COM_METHOD && kafenv.n.sendPackets[sendIndex].remainingAttempts > 0 ) {
+        break;
       }
     }
-    //Respond DW 35ms
-    dwt_setpreambledetecttimeout( 0 );
+    kafenv.n.receiveMethod = DW_COM_METHOD;
+    dwt_setrxaftertxdelay( DW_PERIOD_R12 - DW_RANGE_TOLERANCE );
     dwt_setrxtimeout( DW_R1_SCAN_PERIOD );
-    dwt_rxenable( DWT_START_RX_IMMEDIATE );
+    dwt_setpreambledetecttimeout( DW_PRE_TIMEOUT );
+    kafenv.c.tx.data.fromID = kafenv.u.deviceID;
+    if( sendIndex == SEND_QUEUE_COUNT ) {
+      if( dw.rangingIndex >= kafenv.n.deviceCount ) {
+        dw.rangingIndex = 0;
+      }
+      unsigned char idx = kaf_getnextvalid( dw.rangingIndex++ );
+      kafenv.c.tx.data.toID = kafenv.n.devices[ idx == INVALID_DEVICE_IDX ? 0 : idx ].deviceID;
+      kafenv.c.tx.data.messageType = COM_RANGING_1;
+      kafenv.c.tx.data.ranging1.position = kafenv.u.stateEstimate.x;
+      sendSuccess = sendMessageDW( sizeof( kafenv.c.tx.data.ranging1 ), DWT_START_TX_IMMEDIATE|DWT_RESPONSE_EXPECTED );
+    } else {
+      kafenv.c.tx = kafenv.c.sx[sendIndex];
+      sendSuccess = sendMessageDW( kafenv.n.sendPackets[sendIndex].packetSize, DWT_START_TX_IMMEDIATE|DWT_RESPONSE_EXPECTED );
+    }
     kafenv.c.tx.data.ranging2.position = kafenv.u.stateEstimate.x;
-    if ( receiveMessageDW( DW_R1_SCAN_PERIOD ) ) {//30ms
-      if( kafenv.c.rx.data.messageType == COM_RANGING_1 ) {
-        uint64_t range1RxTime = get_rx_timestamp_u64();
-        uint32_t resp_tx_time = ( range1RxTime + ( DW_PERIOD_R12 * UUS_TO_DWT_TIME ) ) >> 8;
-        uint64_t range2TxTime = ( ( (uint64_t)( resp_tx_time & 0xFFFFFFFEUL ) ) << 8 ) + DW_TX_ANT_DLY;
-        dwt_setdelayedtrxtime( resp_tx_time );
-        dwt_setrxaftertxdelay( DW_PERIOD_R23 - DW_RANGE_TOLERANCE );
-        dwt_setrxtimeout( DW_RANGE_TOLERANCE * 2 );
-        dwt_setpreambledetecttimeout( DW_PRE_TIMEOUT );
-        unsigned char fromID = kafenv.c.rx.data.fromID;
-        kafenv.c.tx.data.toID = fromID;
-        kafenv.c.tx.data.messageType = COM_RANGING_2;
-        kafenv.c.tx.data.ranging2.processingTime = ( unsigned int )( range2TxTime - range1RxTime );
-        if( sendMessageDW( sizeof( kafenv.c.tx.data.ranging2 ), DWT_START_TX_DELAYED|DWT_RESPONSE_EXPECTED ) ) {
-          coordinate pos = kafenv.c.rx.data.ranging1.position;
-          if( receiveMessageDW( DW_PERIOD_R23 + DW_RANGE_TOLERANCE ) && kafenv.c.rx.data.messageType == COM_RANGING_3 && 
-              kafenv.c.rx.data.fromID == fromID && kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
-            range2TxTime = get_tx_timestamp_u64();
-            uint64_t range3RxTime = get_rx_timestamp_u64();
-            processRangingData( fromID, ( (unsigned int)( range3RxTime - range2TxTime ) ) - 
-                kafenv.c.rx.data.ranging3.processingTime, kafenv.c.rx.data.ranging3.timeOfFlight, &pos );
+    if( sendSuccess = ( sendSuccess && receiveMessageDW( DW_R1_SCAN_PERIOD ) ) ) {
+      if( kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
+        if( kafenv.c.rx.data.messageType == COM_RANGING_1 ) {
+          uint64_t range1RxTime = get_rx_timestamp_u64();
+          uint32_t resp_tx_time = ( range1RxTime + ( DW_PERIOD_R12 * UUS_TO_DWT_TIME ) ) >> 8;
+          uint64_t range2TxTime = ( ( (uint64_t)( resp_tx_time & 0xFFFFFFFEUL ) ) << 8 ) + DW_TX_ANT_DLY;
+          dwt_setdelayedtrxtime( resp_tx_time );
+          dwt_setrxaftertxdelay( DW_PERIOD_R23 - DW_RANGE_TOLERANCE );
+          dwt_setrxtimeout( DW_RANGE_TOLERANCE * 2 );
+          dwt_setpreambledetecttimeout( DW_PRE_TIMEOUT );
+          unsigned char fromID = kafenv.c.rx.data.fromID;
+          kafenv.c.tx.data.toID = fromID;
+          kafenv.c.tx.data.messageType = COM_RANGING_2;
+          kafenv.c.tx.data.ranging2.processingTime = ( unsigned int )( range2TxTime - range1RxTime );
+          if( sendMessageDW( sizeof( kafenv.c.tx.data.ranging2 ), DWT_START_TX_DELAYED|DWT_RESPONSE_EXPECTED ) ) {
+            coordinate pos = kafenv.c.rx.data.ranging1.position;
+            if( receiveMessageDW( DW_PERIOD_R23 + DW_RANGE_TOLERANCE ) && kafenv.c.rx.data.messageType == COM_RANGING_3 && 
+                kafenv.c.rx.data.fromID == fromID && kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
+              range2TxTime = get_tx_timestamp_u64();
+              uint64_t range3RxTime = get_rx_timestamp_u64();
+              processRangingData( fromID, ( (unsigned int)( range3RxTime - range2TxTime ) ) - 
+                  kafenv.c.rx.data.ranging3.processingTime, kafenv.c.rx.data.ranging3.timeOfFlight, &pos );
+            } else {
+              unsigned char index = kaf_getdevice( fromID );
+              kafenv.n.devices[index].nodeOrder = 0;
+              kafenv.n.devices[index].lastSeen = kafenv.n.currentTime;
+              kafenv.n.devices[index].position = pos;
+            }
           }
+          sendSuccess = false;
+        } else if( kafenv.c.rx.data.messageType == COM_RANGING_2 ) {
+          unsigned char fromID = kafenv.c.rx.data.fromID;
+          uint64_t range1TxTime = get_tx_timestamp_u64();
+          uint64_t range2RxTime = get_rx_timestamp_u64();
+          uint32_t final_tx_time = ( range2RxTime + ( DW_PERIOD_R23 * UUS_TO_DWT_TIME ) ) >> 8;
+          uint64_t range3TxTime = ( ( (uint64_t)( final_tx_time & 0xFFFFFFFEUL ) ) << 8 ) + DW_TX_ANT_DLY;
+          dwt_setdelayedtrxtime( final_tx_time );
+          unsigned int timeOfFlight = ( (unsigned int)( range2RxTime - range1TxTime ) ) - kafenv.c.rx.data.ranging2.processingTime;
+          kafenv.c.tx.data.toID = fromID;
+          kafenv.c.tx.data.messageType = COM_RANGING_3;
+          kafenv.c.tx.data.ranging3.processingTime = (unsigned int)( range3TxTime - range2RxTime );
+          kafenv.c.tx.data.ranging3.timeOfFlight = timeOfFlight;
+          if( sendMessageDW( sizeof( kafenv.c.tx.data.ranging3 ), DWT_START_TX_DELAYED ) ) {
+            processRangingData( fromID, timeOfFlight, timeOfFlight, &kafenv.c.rx.data.ranging2.position );
+          }
+          sendSuccess = false;
         }
-      } else if( kaf_triggercom() ) {
-        sendMessageDW();
       }
     }
   }
+  kaf_handlecoms( false, sendSuccess, DW_COM_METHOD, dw.frameLength, []( unsigned char* ptr, unsigned char len ) {
+    dwt_setdelayedtrxtime( ( get_rx_timestamp_u64() + ( 2000 * UUS_TO_DWT_TIME ) ) >> 8 );
+    sendMessageDW( len, DWT_START_TX_DELAYED );
+  } );
 }
 
 static void initDW3000( int id ) {
@@ -509,6 +625,7 @@ static void commandTask( void* pvParameters ) {
     loopDW3000();
     loopSerial();
     loopWiFi();
+    communicationStep();
   }
 }
 
@@ -527,8 +644,8 @@ void firmwareSetup() {
   initESCs( 2 );
   initWiFi( 3 );
   initDW3000( 4 );
-  initFirmware( 5 );
-  controlsInit();
+  initFirmware( 6 );
+  softwareInit();
   xTaskCreatePinnedToCore( &flightTask,     "flight_task",     5000, NULL, 1, NULL, 0 );
   xTaskCreatePinnedToCore( &commandTask,    "command_task",    5000, NULL, 1, NULL, 1 );
 }
