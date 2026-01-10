@@ -283,12 +283,12 @@ public:
     float getPitch() const { return rpy[1]; }
     float getYaw() const { return rpy[2]; }
 
-    ////////////////////////////////////////////////
-    ////////////////////////////////////////////////
-
     float getEulerX() const { return rpy[0]; }
     float getEulerY() const { return -rpy[1]; }
     float getEulerZ() const { return -rpy[2]; }
+
+    ////////////////////////////////////////////////
+    ////////////////////////////////////////////////
 
     float getQuaternionX() const { return q[1]; }
     float getQuaternionY() const { return q[2]; }
