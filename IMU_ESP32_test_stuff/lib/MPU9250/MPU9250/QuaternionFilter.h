@@ -2,6 +2,9 @@
 #ifndef QUATERNIONFILTER_H
 #define QUATERNIONFILTER_H
 
+
+
+
 enum class QuatFilterSel {
     NONE,
     MADGWICK,
@@ -9,6 +12,8 @@ enum class QuatFilterSel {
 };
 
 class QuaternionFilter {
+
+
     // for madgwick
     float GyroMeasError = PI * (40.0f / 180.0f);     // gyroscope measurement error in rads/s (start at 40 deg/s)
     float GyroMeasDrift = PI * (0.0f / 180.0f);      // gyroscope measurement drift in rad/s/s (start at 0.0 deg/s/s)
@@ -23,12 +28,38 @@ class QuaternionFilter {
     double deltaT{0.};
     uint32_t newTime{0}, oldTime{0};
 
+
 public:
     void select_filter(QuatFilterSel sel) {
         filter_sel = sel;
     }
 
-    void update(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz, float* q) {
+    inline void rotateVectorByQuat(
+        const float q[4],     // {w, x, y, z}
+        const float v[3],     // input vector (body)
+        float out[3]          // rotated vector (world)
+    ) {
+        const float w = q[0];
+        const float x = q[1];
+        const float y = q[2];
+        const float z = q[3];
+
+        // t = 2 * cross(q_vec, v)
+        const float tx = 2.0f * (y * v[2] - z * v[1]);
+        const float ty = 2.0f * (z * v[0] - x * v[2]);
+        const float tz = 2.0f * (x * v[1] - y * v[0]);
+
+        // v' = v + w * t + cross(q_vec, t)
+        out[0] = v[0] + w * tx + (y * tz - z * ty);
+        out[1] = v[1] + w * ty + (z * tx - x * tz);
+        out[2] = v[2] + w * tz + (x * ty - y * tx);
+    }
+
+
+
+
+
+    void update(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz, float* q, float* lin_acc) {
         newTime = micros();
         deltaT = newTime - oldTime;
         oldTime = newTime;
@@ -37,6 +68,7 @@ public:
         switch (filter_sel) {
             case QuatFilterSel::MADGWICK:
                 madgwick(ax, ay, az, gx, gy, gz, mx, my, mz, q);
+                
                 break;
             case QuatFilterSel::MAHONY:
                 mahony(ax, ay, az, gx, gy, gz, mx, my, mz, q);
@@ -45,7 +77,33 @@ public:
                 no_filter(ax, ay, az, gx, gy, gz, mx, my, mz, q);
                 break;
         }
-    }
+
+        //Code to get world frame acceleration, store it in lin_acc
+        float accel_body[3] = {
+            ax,
+            ay,
+            az
+        };
+
+        float accel_world[3];
+
+        rotateVectorByQuat(q,   // {w, x, y, z}
+                accel_body,     // input vector (body)
+                accel_world     // rotated vector (world)
+        );
+
+        // Remove gravity (NED)
+        accel_world[2] -= 9.807f; //
+
+        // Store result, but in future use a basic filter
+        lin_acc[0] = accel_world[0];
+        lin_acc[1] = accel_world[1];
+        lin_acc[2] = accel_world[2];
+
+}
+        
+        
+
 
     void no_filter(float ax, float ay, float az, float gx, float gy, float gz, float mx, float my, float mz, float* q) {
         float q0 = q[0], q1 = q[1], q2 = q[2], q3 = q[3];  // variable for readability

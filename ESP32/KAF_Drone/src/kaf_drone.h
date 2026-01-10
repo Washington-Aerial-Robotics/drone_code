@@ -24,7 +24,7 @@
 //STRUCTURES__________________________________________________________________________________________________
 //coordinate definition
 typedef PACKED struct coordinate {
- float x;
+ float x; // NED
  float y;
  float z;
  float stdev;
@@ -32,20 +32,20 @@ typedef PACKED struct coordinate {
 
 //quaternion definition
 typedef PACKED struct quaternion {
-  float e0;
-  float e1;
-  float e2;
-  float e3;
-}
+  float e0; //w
+  float e1; //x
+  float e2; //y
+  float e3; //z
+};
 
 //full state struct definition
 typedef PACKED struct state {
-  coordinate x;//position
-  coordinate v;//velocity
-  coordinate a;//acceleration
-  coordinate t;//orientation
-  coordinate w;//angular velocity
-  coordinate e;//angular acceleration
+  coordinate x;//position (NED, world frame, )
+  coordinate v;//velocity (NED, world frame)
+  coordinate a;//acceleration (NED, world frame, linear w/o gravity)
+  coordinate t;//orientation (roll, pitch, yaw)
+  coordinate w;//angular velocity (body frame)
+  coordinate e;//angular acceleration (body frame)
 };
 
 //GLOBAL VARIABLES____________________________________________________________________________________________
@@ -95,7 +95,7 @@ struct global_variables {
       bool clientConnected = false;                  //True if a downlink device is connected to the ESP32
     } wifi;                                          //Structure containing information about ESP#2 WiFi
     struct {
-      bool working = ture;                           //True if FreeRTOS is successfully initialized
+      bool working = true;                           //True if FreeRTOS is successfully initialized
       unsigned short comTaskPeriodOffset = 0;        //Time in ms to deviate from the command task period
       struct {
         unsigned int currentCycle = 0;               //Number of cycles the task successfully executed
@@ -162,4 +162,6 @@ void commandStep();                                     //Feedback controller, c
 
 //FIRMWARE____________________________________________________________________________________________________
 void drone_setup();                                     //Function call to start the drone firmware, call ONCE
+
+
 #endif

@@ -6,6 +6,7 @@
 
 #include "MPU9250/MPU9250RegisterMap.h"
 #include "MPU9250/QuaternionFilter.h"
+#include "MPU9250/KalmanFilter.h"
 
 enum class ACCEL_FS_SEL {
     A2G,
@@ -93,7 +94,8 @@ class MPU9250_ {
     float mag_bias_factory[3] {0., 0., 0.};
     float mag_bias[3] {0., 0., 0.};  // mag calibration value in MAG_OUTPUT_BITS: 16BITS
     float mag_scale[3] {1., 1., 1.};
-    float magnetic_declination = -7.51;  // Japan, 24th June
+    //float magnetic_declination = -7.51;  // Japan, 24th June
+    float magnetic_declination = 14.58; // Seattle, 9th January, from Darrell
 
     // Temperature
     int16_t temperature_count {0};  // temperature raw count output
@@ -108,7 +110,7 @@ class MPU9250_ {
     float m[3] {0.f, 0.f, 0.f};
     float q[4] = {1.0f, 0.0f, 0.0f, 0.0f};  // vector to hold quaternion
     float rpy[3] {0.f, 0.f, 0.f};
-    float lin_acc[3] {0.f, 0.f, 0.f};  // linear acceleration (acceleration with gravity component subtracted)
+    float lin_acc[3] = {0.f, 0.f, 0.f};  // linear acceleration (acceleration with gravity component subtracted)
     QuaternionFilter quat_filter;
     size_t n_filter_iter {1};
 
@@ -120,6 +122,10 @@ class MPU9250_ {
     // I2C
     WireType* wire;
     uint8_t i2c_err_;
+
+
+    // Darrell kf stuff
+    KalmanFilter state_;
 
 public:
     static constexpr uint16_t CALIB_GYRO_SENSITIVITY {131};     // LSB/degrees/sec
@@ -136,6 +142,7 @@ public:
         mpu_i2c_addr = addr;
         setting = mpu_setting;
         wire = &w;
+        KalmanFilter state_;
 
         if (isConnectedMPU9250()) {
             initMPU9250();
@@ -249,7 +256,8 @@ public:
         float md = +m[2];
 
         for (size_t i = 0; i < n_filter_iter; ++i) {
-            quat_filter.update(an, ae, ad, gn, ge, gd, mn, me, md, q);
+            quat_filter.update(an, ae, ad, gn, ge, gd, mn, me, md, q, lin_acc);
+            state_.predict(lin_acc);
         }
 
         if (!b_ahrs) {
@@ -261,9 +269,22 @@ public:
         return true;
     }
 
+    ////////////////////////////////////////////////
+    /// Darrell code to get useful stuff //////////
+
+    const float* getPos() const { return state_.getPos(); }
+    const float* getVel() const { return state_.getVel(); }
+    const float* getAcc() const { return state_.getAcc(); }
+
+    const float* getAngVel() const { return state_.getAng_Acc(); }
+    const float* getAngAcc() const { return state_.getAngVel(); }
+
     float getRoll() const { return rpy[0]; }
     float getPitch() const { return rpy[1]; }
     float getYaw() const { return rpy[2]; }
+
+    ////////////////////////////////////////////////
+    ////////////////////////////////////////////////
 
     float getEulerX() const { return rpy[0]; }
     float getEulerY() const { return -rpy[1]; }
@@ -449,6 +470,14 @@ private:
     }
 
 public:
+
+    // Darrell
+    // Use this to update the position of the imu from something like a gps or barometer
+    void update_pos(float pos_meas[3]) {
+        state_.updatePosition(pos_meas);
+    }
+
+
     void update_rpy(float qw, float qx, float qy, float qz) {
         // Define output variables from updated quaternion---these are Tait-Bryan angles, commonly used in aircraft orientation.
         // In this coordinate system, the positive z-axis is down toward Earth.
@@ -477,9 +506,9 @@ public:
         else if (rpy[2] < -180.f)
             rpy[2] += 360.f;
 
-        lin_acc[0] = a[0] + a31;
-        lin_acc[1] = a[1] + a32;
-        lin_acc[2] = a[2] - a33;
+        //lin_acc[0] = a[0] + a31;
+        //lin_acc[1] = a[1] + a32;
+        //lin_acc[2] = a[2] - a33;
     }
 
     void update_accel_gyro() {
@@ -490,6 +519,11 @@ public:
         a[0] = (float)raw_acc_gyro_data[0] * acc_resolution;  // get actual g value, this depends on scale being set
         a[1] = (float)raw_acc_gyro_data[1] * acc_resolution;
         a[2] = (float)raw_acc_gyro_data[2] * acc_resolution;
+
+        // Darrell custom accel calibration stuff
+        a[0] = (a[0] + 0.03245)*9.79084510558;
+        a[1] = (a[1] + 0.00850)*9.79084510558;
+        a[2] = (a[2] + 0.02700)*9.68783957325;
 
         temperature_count = raw_acc_gyro_data[3];                  // Read the adc values
         temperature = ((float)temperature_count) / 333.87 + 21.0;  // Temperature in degrees Centigrade
@@ -534,7 +568,7 @@ public:
     }
 }
 
-
+    // Darrell custom calibration stuff for magnetometer
     const double A[3][3] = {
         { 1.019571,  0.032463, -0.053064 },
         { 0.032463,  0.830989, -0.015915 },

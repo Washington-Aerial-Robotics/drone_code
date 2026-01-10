@@ -4,6 +4,9 @@
 
 MPU9250 mpu;
 int n = 0;
+float pos_meas[3] = {0.0f, 0.0f, 0.0f};
+
+
 
 void print_calibration() {
     Serial.println("< calibration parameters >");
@@ -64,7 +67,7 @@ void setup() {
     //Serial.println("Accel Gyro calibration will start in 5sec.");
     //Serial.println("Please leave the device still on the flat plane.");
     //mpu.verbose(true);
-    delay(200);
+    //delay(200);
     //mpu.calibrateAccelGyro();
     //print_calibration();
     Serial.println("setup complete");
@@ -98,17 +101,18 @@ double get_mag_magnitude() {
     return a;
 }
 
+
 void loop() {
     if (mpu.update()) {
         n++;
-        if (n%10 == 1) {
-            Serial.print(mpu.getQuaternionW(), 3);
+        if (n%15 == 1) {
+            Serial.print(mpu.getQuaternionW(), 4);
             Serial.print(",");
-            Serial.print(mpu.getQuaternionX(), 3);
+            Serial.print(mpu.getQuaternionX(), 4);
             Serial.print(",");
-            Serial.print(mpu.getQuaternionY(), 3);
+            Serial.print(mpu.getQuaternionY(), 4);
             Serial.print(",");
-            Serial.print(mpu.getQuaternionZ(), 3);
+            Serial.print(mpu.getQuaternionZ(), 4);
             Serial.print(",");
             Serial.print(mpu.getAccX(), 3);
             Serial.print(",");
@@ -120,10 +124,28 @@ void loop() {
             Serial.print(",");
             Serial.print(mpu.getMagY(), 3);
             Serial.print(",");
-            Serial.println(mpu.getMagZ(), 3);
+            Serial.print(mpu.getMagZ(), 3);
+            Serial.print(",");
+            Serial.print(mpu.getLinearAccX(), 5); //world frame NED
+            Serial.print(",");
+            Serial.print(mpu.getLinearAccY(), 5);
+            Serial.print(",");
+            Serial.print(mpu.getLinearAccZ(), 5);
+            Serial.print(",");
+            Serial.print(mpu.getPos()[0], 3); // NED pos, N
+            Serial.print(",");
+            Serial.print(mpu.getPos()[1], 3); // NED pos, E
+            Serial.print(",");
+            Serial.println(mpu.getPos()[2], 3); // NED pos, D
+            
+        }
+        if (n%100 ==1 ) {
+            mpu.update_pos(pos_meas);
         }
     }
 }
+
+
 
 
 

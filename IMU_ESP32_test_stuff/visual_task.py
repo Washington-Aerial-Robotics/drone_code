@@ -26,9 +26,10 @@ def run(cmd):
     subprocess.run([sys.executable, "-m", "platformio"] + cmd, cwd=PROJECT_DIR, check=True)
 
 
-response = input("(C)onnect or (S)imulate? ")
+response = input("(C)onnect, (S)imulate, (M)ag calibate?: ")
 
-if (response == "c" or response == "C"):
+
+if (response == "c" or response == "C" or response == "M" or response == "m"):
     #Build firmware
     run(["run"])
     # Upload firmware
@@ -50,7 +51,7 @@ if (response == "c" or response == "C"):
         time.sleep(0.01)
 
 
-viz_attitude = visualizeAttitude(MaxHz=60)
+viz_attitude = visualizeAttitude(MaxHz=20)
 
 print("Listening for attitude ... Ctrl+C to stop")
 
@@ -59,25 +60,49 @@ def read_data(line, viz_attitude):
         (
         qw, qx, qy, qz, 
         accX, accY, accZ,
-        magX, magY, magZ 
+        magX, magY, magZ,
+        accN, accE, accD,
+        posN, posE, posD
         ) = map(float, line.split(","))
     except ValueError:
         return
     
-    acc = [accX, accY, -accZ]
-    mag = [magX, magY, magZ]
-    viz_attitude.update_attitude(qw, qx, qy, qz, acc=acc, mag=mag) # should work for either .apply or .inv().apply, but doesn't
+    #acc = [accX, -accY, -accZ] # appears to work
+    #acc = [-accX, accY, accZ]
+    mag = [-magX, magY, magZ]
+    mag = [magY, -magX, magZ] # best so far, -1 works too
+    mag = [-magY, magZ, magX]
 
-i = 1
+    acc = [accN, accE, accD] # overwrite for testing
+
+    pos3 = [posN, posE, posD]
+    viz_attitude.update_attitude(qw, qx, qy, qz, acc=acc, mag=mag, pos=pos3)
+    return acc
+
 # ---------------- Main loop ----------------
+n = 0
+ave = 0
 try:
     while True:
-        if (response == "c" or response == "C"):
+        if (response == "c" or response == "C" or response == "m" or response == "M"):
             line = ser.readline().decode("utf-8", errors="ignore").strip()
             #with open("data.txt", "a") as file:
                 #file.write(line)
                 #file.write("\n")
-            read_data(line, viz_attitude=viz_attitude)
+            acc = read_data(line, viz_attitude=viz_attitude)
+            #print(line)
+            #print(acc)
+            
+            #if 100 <= n < 300:
+            #    print("Starting collection")
+            #    ave += acc[2] / 200   # average over 200 samples
+            #elif n == 300:
+            #    print("Average:", ave)
+            #    break
+            #n += 1
+
+            
+            
 
         elif (response == "s" or response == "S"):
             with open("data.txt", "r") as file:
