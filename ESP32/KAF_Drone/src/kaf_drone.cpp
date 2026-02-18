@@ -1,225 +1,217 @@
-#include <Arduino.h>
-#include "MPU9250.h"
-#include <Eigen/Geometry>
-#include <cmath>
+#include "kaf_drone.h"
+#include "communication.h"
+// Need to add mpu include, and put mpu in library folder
+// Need to make mpu object calls automatic/modular, or copy paste it over
+// Work on
 
-//PREAMBLE____________________________________________________________________________________________________
-#ifdef _MSC_VER
-#define PACKED 
+#if ALT_DEFINE
+#include "altdef.h"
 #else
-#define PACKED __attribute__((__packed__))
-#endif
-#ifndef NULL
-#define NULL 0
+#include <math.h>
+#include <stdio.h>
 #endif
 
-//CONFIGURATIONS______________________________________________________________________________________________
-//define once
-#ifndef ESP32_PNT_DRONE
-#define ESP32_PNT_DRONE
-//ids for each task
-#define CMD_TASK 0
-#define FLIGHT_TASK 1
-//maximum number of motors/devices
-#define MOTOR_COUNT 4
-#define DEVICE_COUNT 4
-//debug control
-#define DEBUGPRINT 1
+struct global_variables kafenv;
 
-//STRUCTURES__________________________________________________________________________________________________
-//coordinate definition
-typedef PACKED struct coordinate {
- float x; // NED
- float y;
- float z;
- float stdev;
-};
-
-
-//full state struct definition
-typedef PACKED struct state {
-  coordinate x;//position (NED, world frame)
-  coordinate v;//velocity (NED, world frame)
-  coordinate a;//acceleration (NED, world frame, linear w/o gravity)
-  coordinate t;//orientation (roll, pitch, yaw)
-  coordinate w;//angular velocity (body frame)
-  coordinate e;//angular acceleration (body frame), unfiltered
-  MPU9250 mpu; //useful internal attitude filter
-};
-
-//GLOBAL VARIABLES____________________________________________________________________________________________
-struct global_variables {
-  struct {//DRONE STATE DATA
-    unsigned char deviceID = 'U';                    //Character designating a unique ID of a drone
-    state stateEstimate;                             //State estimate of the drone in the global reference
-                                                     //frame. Position is cartesian, orientation is Euler.
-  } u;                                               //Drone data
-  struct {//PERIPHERAL DATA
-    struct {
-      bool working = false;                          //True if the ESP32 is connected to the MPU 
-      bool calibrateMPU = true;                      //If true, calibrates MPU upon drone code setup
-      unsigned long currentStep = 0;                 //Timestamp in ms of call of readIMU
-      unsigned long timeStep = 0;                    //Time intervalin ms between the last two readIMU calls
-      unsigned long lastRead = 0;                    //Time in ms since the last update from the IMU
-      unsigned int missCount = 0;                    //Number of consecutive unsuccessful attemps of readIMU
-      float accelCalib[3] = { 0, 0, 0 };             //Calibration offsets for acceleration m/s2
-      float angvelCalib[3] = { 0, 0, 0 };            //Calibration offset for angular acceleration in rad/s2 
-      float accel[3] = { 0, 0, 0 };                  //Acceleration in IMU reference frame m/s2
-      float angvel[3] = { 0, 0, 0 };                 //Angular acceleration in Euler, IMU reference in rad/s2
-    } mpu;                                           //Structure containing IMU data
-    struct {
-      bool working = true;                           //True if the PWM library is working
-      unsigned short motorCount = MOTOR_COUNT;       //Number of motors controlled by the drone
-      bool atTarget = false;                         //True if current motor voltages match the target volt
-      struct {
-        bool working = false;                        //True if the PWM at the selected pin is working
-        int currentRaw = 0;                          //Current voltage input of the PWM
-        int targetRaw = 0;                           //Target voltage of the PWM
-        float targetSpeed = 0;                       //Variable to write to in order to set the target PWM
-                                                     //voltage, specified in an unitless scalar 0<=1
-      } esc[MOTOR_COUNT];                            //Structure containing data for each PWM
-    } escs;                                          //Structure for PWM information
-    struct {
-      bool working = false;                          //True if the ESP32 is connected to the DW3000
-      bool doRanging = true;                         //If true, drone will attempt ranging 2 & 3
-    } dw;                                            //Structure containing DW3000 data
-    struct {
-      bool working = false;                          //True if the ESP32 is connected to a WiFi network
-      char wifiName[32] = "default";                 //Specifies the name of the WiFi network to connect to
-                                                     //upon initial setup or when resetConnection is raised
-      char wifiPassword[25] = "default";             //Specifies the password of the WiFi network
-      char localIP[127] = "default";                 //If connected, this records the IP address of the drone
-      bool resetConnection = false;                  //If true, the drone will reattempt to connect to a WiFi
-                                                     //network with the name wifiPassword
-      bool clientConnected = false;                  //True if a downlink device is connected to the ESP32
-    } wifi;                                          //Structure containing information about ESP#2 WiFi
-    struct {
-      bool working = true;                           //True if FreeRTOS is successfully initialized
-      unsigned short comTaskPeriodOffset = 0;        //Time in ms to deviate from the command task period
-      struct {
-        unsigned int currentCycle = 0;               //Number of cycles the task successfully executed
-        unsigned long taskPeriod = 0;                //Time in ms it took to execute the task computations
-        unsigned long totalPeriod = 0;               //Total time it took to run a single cycle of the task
-        unsigned long currentTime = 0;               //Current time step in ms
-      } task[2];                                     //Structure for each task. 0 is command, 1 is flight
-    } rtos;                                          //Information about FreeRTOS management
-  } s;                                               //Sensor data
-  struct {//COMMUNICATION DATA
-    union {
-      PACKED struct {
-        unsigned char fromID;                        //ID of the sender of the communication packet
-        unsigned char toID;                          //ID of the intended receiver of the packet
-        unsigned char messageType;                   //Message type of the communication packet
-        union {
-          unsigned char byte;
-          unsigned char bytes[248];
-          coordinate coord;
-          PACKED struct {
-            coordinate position;
-          } ranging1;
-          PACKED struct {
-            unsigned int processingTime;
-            coordinate position;
-          } ranging2;
-          PACKED struct {
-            unsigned int processingTime;
-            unsigned int timeOfFlight;
-          } ranging3;
-          PACKED struct {
-            unsigned char deviceID[4];
-            unsigned int timeLastSeen[4];
-          } deviceList;
-          PACKED struct {
-            unsigned int startPos;
-            unsigned char length;
-            unsigned char bytes[200];
-          } globalVarTransfer;
-        };
-      } data;                                       //Data representation of transmission data
-      unsigned char raw[ sizeof( data ) ];          //Buffer representation of transmission data
-    } rx, tx;                                       //Structs for loading receive/send coms data
-    unsigned int deviceCount = 0;                   //Number of peer drones observed by this drone
-    unsigned char deviceLookup[0xFF];               //Drone ID to devices struct array index lookup
-    struct {
-      unsigned char deviceID;                       //Unique id of peer drone
-      unsigned long lastSeen;                       //Last observation of peer drone in ms
-      unsigned long lastRanging;                    //Last successful ranging with peer drone in ms
-      coordinate position;                          //Position estimate in m of peer drone
-      float distance;                               //Distance in m between peer drone and this drone
-    } devices[DEVICE_COUNT];                        //Structure for each peer that the drone can observe
-  } c;                                              //Communication data
-};
-extern struct global_variables kafenv;
-
-//SOFTWARE FUNCTIONS__________________________________________________________________________________________
-//void setupDroneConfiguration();                         //Called at the start to set initial drone config
-void debugUpdate();                                     //Called in command task every cycle if DEBUGPRINT = 1
-unsigned char getDeviceIndex( unsigned char deviceID ); //Method that gets the index of peer with id deviceID
-void handleTransmission( void(*sendFunc)( int ) );      //Called in command task process communication data
-void doStateEstimate()                                  //Called in flight task every cycle to calculate state
-{
-    mpu.update()
-    Eigen::Vector3f world_acc =
-        rotateVectorEigen(
-            mpu.q,
-            mpu.accel[0],
-            mpu.accel[1],
-            mpu.accel[2]
-        );
-
-    // Remove gravity (NED)
-    world_acc.z() += 0.981f;
-
-    kafenv.u.stateEstimate.a.x = world_acc.x()*10; // unfiltered, in m/s^2
-    kafenv.u.stateEstimate.a.y = world_acc.y()*10;
-    kafenv.u.stateEstimate.a.z = world_acc.z()*10;
-    
-}                        
-void commandStep();                                     //Feedback controller, called every flight task cycle
-
-
-Eigen::Vector3f rotateVectorEigen(const float* q,
-                                  float vx, float vy, float vz)
-{
-    Eigen::Quaternionf qe(q[0], q[1], q[2], q[3]); // Eigen expects qw first, mpu.q has qw last
-    qe.normalize();
-
-    Eigen::Vector3f v(vx, -vy, -vz); // Don't know why, but need to multiply y and z by -1 to make work
-
-    // Body → world rotation
-    return qe * v;
+void kaf_dumpmemory() {
+  //KF_REGVAR( 'c', "kafenv.u.deviceID", kafenv.u.deviceID );
 }
 
-
-//FIRMWARE____________________________________________________________________________________________________
-void drone_setup() { //Function call to start the drone firmware, call ONCE
-
-    Serial.begin(115200); //baud rate
-    Wire.begin();
-    delay(2000);
-
-    MPU9250Setting setting;
-    setting.accel_fs_sel = ACCEL_FS_SEL::A16G;
-    setting.gyro_fs_sel = GYRO_FS_SEL::G2000DPS;
-    setting.mag_output_bits = MAG_OUTPUT_BITS::M16BITS;
-    setting.fifo_sample_rate = FIFO_SAMPLE_RATE::SMPL_250HZ;
-    setting.gyro_fchoice = 0x03;
-    setting.gyro_dlpf_cfg = GYRO_DLPF_CFG::DLPF_92HZ;
-    setting.accel_fchoice = 0x01;
-    setting.accel_dlpf_cfg = ACCEL_DLPF_CFG::DLPF_99HZ;
-    mpu.setMagneticDeclination(14);
-    mpu.selectFilter(QuatFilterSel::MADGWICK);
-
-    if (!mpu.setup(0x68, setting)) {  // change to your own address
-        while (1) {
-            Serial.println("MPU connection failed. Please check your connection with `connection_check` example.");
-            delay(5000);
-        }
+void kaf_matmul( float* mat, float* in, float* out, unsigned char size ) {
+  for( unsigned char y = 0; y < size; y++ ) {
+    out[y] = 0;
+    for( unsigned char x = 0; x < size; x++ ) {
+      out[y] += mat[ x + y * size ] * in[x];
     }
+  }
+}
 
-    delay(200);
-    Serial.println("setup complete");
-};                                     
+void kaf_filterreset( measfilter* filter ) {
+  filter->stateX1 = 0;
+  filter->stateX2 = 0;
+  filter->measCount = 0;
+  filter->measTotal = 0;
+  filter->measDev = 0;
+}
 
+void kaf_filtercalib( measfilter* filter, float measured ) {
+  filter->measCount++;
+  filter->measTotal += measured;
+  filter->offset = filter->measTotal / filter->measCount;
+  filter->measDev += (  measured - filter->offset ) * ( measured - filter->offset );
+  filter->uncertainity = sqrt( filter->measDev / filter->measCount );
+}
 
-#endif
+float kaf_filterstep( measfilter* filter, float measured, float dt ) {
+  float dX2 = ( filter->frequency * filter->frequency * filter->stateX1 ) * dt;
+  float corrected = filter->gain *( measured + filter->offset );
+  filter->stateX1 += ( -1.414213562373095 * filter->frequency * filter->stateX1 - filter->stateX2 + corrected ) * dt;
+  filter->stateX2 += dX2;
+  return filter->stateX2;
+}
+
+void kaf_pidreset( pid* pid ) {
+  pid->integ = 0;
+  pid->deriv = 0; 
+  pid->error = 0; 
+  pid->desired = 0; 
+  pid->prevmeas = NAN;
+  float r = tan( ( (float)M_PI ) / pid->derlimit );
+  pid->lowpass[0] = r * r / ( 1 + sqrt( 2 ) * r + r * r );
+  pid->lowpass[1] = pid->lowpass[0] * ( 2 - 2 / ( r * r ) );
+  pid->lowpass[2] = pid->lowpass[0] * ( 1 / ( r * r ) - sqrt( 2 ) / r + 1  );
+  pid->lowpass[3] = 0;
+  pid->lowpass[4] = 0;
+}
+
+float kaf_pidstep( pid* pid, float desired, float measured, float dt ) {
+  pid->desired = desired;
+  pid->error = fmodf( pid->desired - measured, pid->modula );
+  if( pid->error > pid->modula / 2 ) {
+    pid->error = pid->error - pid->modula;
+  } else if( pid->error < -pid->modula / 2 ) {
+    pid->error = pid->error + pid->modula;
+  }
+  pid->deriv = ( pid->prevmeas - measured ) / dt;
+  pid->prevmeas = measured;
+  if( isfinite( pid->deriv ) ) {
+    pid->deriv = 0;
+  } else {
+    float datalp0 = pid->deriv - pid->lowpass[1] * pid->lowpass[3] - pid->lowpass[2] * pid->lowpass[4];
+    pid->deriv = pid->lowpass[0] * ( datalp0 + 2 * pid->lowpass[3] + pid->lowpass[4] );
+    pid->lowpass[4] = pid->lowpass[3];
+    pid->lowpass[3] = datalp0;
+  }
+  pid->integ = pid->integ + pid->error * dt;
+  KF_BOUND( pid->integ, -pid->intlimit, pid->intlimit );
+  float output = pid->Kp * pid->error + pid->Ki * pid->integ + pid->Kd * pid->deriv + pid->Kf * pid->desired;
+  KF_BOUND( output, -pid->outlimit, pid->outlimit );
+  return output;
+}
+
+unsigned char kaf_getnextvalid( unsigned char indicesIndex ) {
+  unsigned long disconnectTime = kafenv.n.currentTime - NETWORK_DEVICE_TIMEOUT;
+  for( ; kafenv.n.deviceCount >= indicesIndex; ) {  
+    unsigned char index =  kafenv.n.deviceIndices[indicesIndex];
+    if( kafenv.n.devices[index].lastSeen < disconnectTime ) {
+      kafenv.n.deviceIndices[indicesIndex] = kafenv.n.deviceIndices[ --kafenv.n.deviceCount ];
+      kafenv.n.deviceIndices[ kafenv.n.deviceCount ] = index;
+      kafenv.n.deviceLookup[ kafenv.n.devices[index].deviceID ] = INVALID_DEVICE_IDX;
+    } else {
+      return index;
+    }
+  }
+  return INVALID_DEVICE_IDX;
+}
+
+unsigned char kaf_getdevice( unsigned char deviceID ) {
+  unsigned char index = kafenv.n.deviceLookup[deviceID];
+  if( index == INVALID_DEVICE_IDX ) {
+    if( kafenv.n.deviceCount < DEVICE_COUNT ) {
+      index = kafenv.n.deviceIndices[kafenv.n.deviceCount++];
+    } else {
+      unsigned long disconnectTime = kafenv.n.currentTime - NETWORK_DEVICE_TIMEOUT;
+      for( index = 0; index < DEVICE_COUNT - 1; index++ ) {
+        if( kafenv.n.devices[index].lastSeen < disconnectTime ) {
+          break;
+        }
+      }
+    }
+    kafenv.n.deviceLookup[ kafenv.n.devices[index].deviceID ] = INVALID_DEVICE_IDX;
+    kafenv.n.deviceLookup[deviceID] = index;
+    kafenv.n.devices[index].deviceID = deviceID;
+  }
+  kafenv.n.devices[index].liason = kafenv.n.receiveMethod;
+  return index;
+}
+
+unsigned char kaf_hasdevice( unsigned char deviceID ) {
+  unsigned char index = kafenv.n.deviceLookup[deviceID];
+  if( index == INVALID_DEVICE_IDX || ( kafenv.n.currentTime - kafenv.n.devices[index].lastSeen ) > NETWORK_DEVICE_TIMEOUT ) {
+    return INVALID_DEVICE_IDX;
+  }
+  return index;
+}
+
+unsigned char kaf_getforwarding( unsigned char deviceID ) {
+  unsigned char forwardID = deviceID;
+  for( unsigned char i = 0; i < 4; i++ ) {
+    unsigned char toIdx = kaf_hasdevice( forwardID );
+    if( toIdx == INVALID_DEVICE_IDX ) {
+      return INVALID_DEVICE_IDX;
+    } else if( kafenv.n.devices[toIdx].nodeOrder == 0 ) {
+      return toIdx;
+    } else {
+      forwardID = kafenv.n.devices[toIdx].liason;
+    }
+  }
+  return INVALID_DEVICE_IDX;
+}
+
+unsigned char kaf_addcoms( unsigned char attempts, unsigned char method, unsigned char size, void( *handler )( bool ) ) {
+  for( unsigned char i = 0; i < SEND_QUEUE_COUNT; i++ ) {
+    if( kafenv.n.sendPackets[i].remainingAttempts == 0 ) {
+      kafenv.n.sendPackets[i].remainingAttempts = attempts;
+      kafenv.n.sendPackets[i].deliveryMethod = method;
+      kafenv.n.sendPackets[i].packetSize = size;
+      kafenv.n.sendPackets[i].handlingFunction = handler;
+      return i;
+    }
+  }
+  return SEND_QUEUE_COUNT - 1;
+}
+
+void kaf_handlecoms( bool doSend, bool doReply, unsigned char method, unsigned char len, void( *sendFunc )( unsigned char*, unsigned char ) ) {
+  bool isRecepient = false;
+  if( doReply ) {
+    kafenv.n.receiveMethod = method;
+    kafenv.n.receiveSize = len - COM_HEADER_LEN;
+    kafenv.n.replySize = sizeof( kafenv.c.tx.data.bytes ) + 1;
+    if( isRecepient = kafenv.c.rx.data.toID == kafenv.u.deviceID ) {
+      communicationRespond();
+      if( kafenv.n.replySize < sizeof( kafenv.c.tx.data.all ) ) {
+        kafenv.c.tx.data.fromID = kafenv.u.deviceID;
+        kafenv.c.tx.data.toID = kafenv.c.rx.data.fromID;
+        kafenv.c.tx.data.messageID = kafenv.n.nextMessageID;
+        sendFunc( kafenv.c.tx.raw, kafenv.n.replySize );
+        kafenv.n.nextMessageID = ( unsigned char )( rand() % 0x100 );
+      }
+    }
+    communicationRecord();
+  }
+  for( int i = 0; i < SEND_QUEUE_COUNT; i++ ) {
+    unsigned char attempts = kafenv.n.sendPackets[i].remainingAttempts;
+    if( attempts > 0 ) {
+      bool replySuccess;
+      if( isRecepient && kafenv.c.sx[i].data.messageID == kafenv.c.rx.data.messageID ) {
+        if( ( kafenv.c.sx[i].data.messageType & COM_FWD ) == 0 || kafenv.n.sendPackets[i].handlingFunction == NULL ) {
+          replySuccess = kafenv.c.sx[i].data.fromID == kafenv.c.rx.data.toID && kafenv.c.sx[i].data.toID == kafenv.c.rx.data.fromID;
+        } else {
+          fwd* sf = KF_FWD( sx[i], kafenv.n.sendPackets[i].packetSize );
+          fwd* rf = KF_FWD( rx, kafenv.n.receiveSize );
+          replySuccess = ( kafenv.c.rx.data.messageType & COM_FWD ) != 0 && sf->originID == rf->targetID && sf->targetID == rf->originID;
+        }
+      }
+      if( replySuccess ) {
+        attempts = 0;
+      } else if( kafenv.n.sendPackets[i].deliveryMethod == method ) {
+        if( doSend ) {
+          sendFunc( kafenv.c.sx[i].raw, kafenv.n.sendPackets[i].packetSize );
+          attempts = attempts <= 2 ? 0 : attempts - 2;
+        } else {
+          attempts--;
+        }
+      }
+      if( attempts == 0 ) {
+        kafenv.n.sendPackets[i].deliveryMethod = 0;
+        kafenv.n.sendPackets[i].packetSize = 0;
+        void( *handlingFunction )( bool ) = kafenv.n.sendPackets[i].handlingFunction;
+        if( handlingFunction != NULL ) {
+          kafenv.n.sendPackets[i].handlingFunction = NULL;
+          handlingFunction( replySuccess );
+        }
+      }
+      kafenv.n.sendPackets[i].remainingAttempts = attempts;
+    }
+  }
+}
